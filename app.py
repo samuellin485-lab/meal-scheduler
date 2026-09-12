@@ -46,7 +46,6 @@ if uploaded_file is not None:
     st.sidebar.markdown("---")
     st.sidebar.header("✈️ 2. 特定人員出勤限制")
     
-    # 預設離台名單與日期 (方便自動帶入)
     default_leaves = {
         "陳佳穎 Elizabeth": datetime(2025, 11, 25).date(),
         "Mia Dumoran": datetime(2025, 11, 27).date(),
@@ -56,7 +55,6 @@ if uploaded_file is not None:
         "Teosaner Yutanesy Iman": datetime(2025, 9, 22).date()
     }
 
-    # 多選離台人員
     st.sidebar.subheader("🛫 提前離台人員設定")
     selected_leave_members = st.sidebar.multiselect(
         "選擇離台成員",
@@ -68,7 +66,6 @@ if uploaded_file is not None:
         l_date = st.sidebar.date_input(f"【{m}】最後服事/離台日期", value=d_val, key=f"leave_{m}")
         leave_dates_gui[m] = l_date
 
-    # 多選延後加入人員
     st.sidebar.subheader("🛬 延後加入人員設定")
     selected_join_members = st.sidebar.multiselect(
         "選擇延後加入成員",
@@ -158,7 +155,6 @@ def run_scheduler(df, start_date, end_date, holidays_list, b_count, a_min, a_max
         for p in members:
             model.Add(x[p, d, "飯前"] + x[p, d, "飯後"] <= 1)
 
-    # 套用 GUI 輸入的離台與加入日期
     for p in members:
         for d in dates:
             if p in join_dates and d < join_dates[p]:
@@ -305,7 +301,7 @@ if uploaded_file is not None:
                 st.download_button(
                     label="📥 下載彩色版排班 Excel 檔案",
                     data=excel_data,
-                    file_name="114-1_飯食服事排班結果_彩色版.xlsx",
+                    file_name="學期飯食服事排班結果_彩色版.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
             else:
