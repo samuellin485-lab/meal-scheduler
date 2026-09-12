@@ -17,10 +17,12 @@ uploaded_file = st.sidebar.file_uploader("📂 上傳表單檔案 (CSV 或 Excel
 # 2. 側邊欄條件設定 (GUI 化)
 st.sidebar.header("⚙️ 1. 學期與基本設定")
 
-start_date = st.sidebar.date_input("學期開始日期", datetime(2025, 9, 15))
-end_date = st.sidebar.date_input("學期結束日期", datetime(2025, 12, 18))
+# 預設日期改為今日
+today = datetime.now().date()
+start_date = st.sidebar.date_input("學期開始日期", today)
+end_date = st.sidebar.date_input("學期結束日期", today + timedelta(days=90))
 
-# 星期選取設定
+# 星期選取設定 (預設空白)
 weekday_options = {
     "週一": 0,
     "週二": 1,
@@ -31,16 +33,16 @@ weekday_options = {
 selected_weekday_names = st.sidebar.multiselect(
     "🗓️ 選擇每週服事日期",
     options=list(weekday_options.keys()),
-    default=["週一", "週三", "週四"]
+    default=[]  # 預設空白
 )
 selected_weekdays = [weekday_options[name] for name in selected_weekday_names]
 
-# 國定假日設定
-default_holidays = [datetime(2025, 9, 29).date(), datetime(2025, 10, 6).date(), datetime(2025, 10, 10).date()]
+# 國定假日設定 (預設空白)
+date_range_days = (end_date - start_date).days if end_date >= start_date else 0
 selected_holidays = st.sidebar.multiselect(
     "國定假日 / 不排班日期", 
-    options=[start_date + timedelta(days=i) for i in range((end_date - start_date).days + 1)],
-    default=[d for d in default_holidays if start_date <= d <= end_date],
+    options=[start_date + timedelta(days=i) for i in range(date_range_days + 1)],
+    default=[], # 預設空白
     format_func=lambda d: d.strftime("%Y/%m/%d (%a)")
 )
 
@@ -57,7 +59,6 @@ join_dates_gui = {}
 df_raw = None
 
 if uploaded_file is not None:
-    # 判斷副檔名並進行讀取
     file_name = uploaded_file.name
     try:
         if file_name.endswith('.csv'):
@@ -76,36 +77,27 @@ if df_raw is not None:
     
     st.sidebar.markdown("---")
     st.sidebar.header("✈️ 2. 特定人員出勤限制")
-    
-    default_leaves = {
-        "陳佳穎 Elizabeth": datetime(2025, 11, 25).date(),
-        "Mia Dumoran": datetime(2025, 11, 27).date(),
-        "關佳恩 (Hannah Kwan)": datetime(2025, 12, 1).date()
-    }
-    default_joins = {
-        "Teosaner Yutanesy Iman": datetime(2025, 9, 22).date()
-    }
 
+    # 提前離台人員設定 (預設空白)
     st.sidebar.subheader("🛫 提前離台人員設定")
     selected_leave_members = st.sidebar.multiselect(
         "選擇離台成員",
         options=members_list,
-        default=[m for m in default_leaves.keys() if m in members_list]
+        default=[] # 預設空白
     )
     for m in selected_leave_members:
-        d_val = default_leaves.get(m, end_date)
-        l_date = st.sidebar.date_input(f"【{m}】最後服事/離台日期", value=d_val, key=f"leave_{m}")
+        l_date = st.sidebar.date_input(f"【{m}】最後服事/離台日期", value=end_date, key=f"leave_{m}")
         leave_dates_gui[m] = l_date
 
+    # 延後加入人員設定 (預設空白)
     st.sidebar.subheader("🛬 延後加入人員設定")
     selected_join_members = st.sidebar.multiselect(
         "選擇延後加入成員",
         options=members_list,
-        default=[m for m in default_joins.keys() if m in members_list]
+        default=[] # 預設空白
     )
     for m in selected_join_members:
-        d_val = default_joins.get(m, start_date)
-        j_date = st.sidebar.date_input(f"【{m}】開始可服事日期", value=d_val, key=f"join_{m}")
+        j_date = st.sidebar.date_input(f"【{m}】開始可服事日期", value=start_date, key=f"join_{m}")
         join_dates_gui[m] = j_date
 
 # 核心排班函數
