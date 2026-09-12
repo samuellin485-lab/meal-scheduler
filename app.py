@@ -20,6 +20,21 @@ st.sidebar.header("⚙️ 1. 學期與基本設定")
 start_date = st.sidebar.date_input("學期開始日期", datetime(2025, 9, 15))
 end_date = st.sidebar.date_input("學期結束日期", datetime(2025, 12, 18))
 
+# 星期選取設定 (0:週一, 1:週二, 2:週三, 3:週四, 4:週五)
+weekday_options = {
+    "週一": 0,
+    "週二": 1,
+    "週三": 2,
+    "週四": 3,
+    "週五": 4
+}
+selected_weekday_names = st.sidebar.multiselect(
+    "🗓️ 選擇每週服事日期",
+    options=list(weekday_options.keys()),
+    default=["週一", "週三", "週四"]
+)
+selected_weekdays = [weekday_options[name] for name in selected_weekday_names]
+
 # 國定假日設定
 default_holidays = [datetime(2025, 9, 29).date(), datetime(2025, 10, 6).date(), datetime(2025, 10, 10).date()]
 selected_holidays = st.sidebar.multiselect(
@@ -78,7 +93,7 @@ if uploaded_file is not None:
         join_dates_gui[m] = j_date
 
 # 核心排班函數
-def run_scheduler(df, start_date, end_date, holidays_list, b_count, a_min, a_max, leave_map, join_map):
+def run_scheduler(df, start_date, end_date, active_weekdays, holidays_list, b_count, a_min, a_max, leave_map, join_map):
     holidays_dt = [datetime.combine(h, datetime.min.time()) for h in holidays_list]
     leave_dates = {k: datetime.combine(v, datetime.min.time()) for k, v in leave_map.items()}
     join_dates = {k: datetime.combine(v, datetime.min.time()) for k, v in join_map.items()}
@@ -88,14 +103,14 @@ def run_scheduler(df, start_date, end_date, holidays_list, b_count, a_min, a_max
     end_dt = datetime.combine(end_date, datetime.min.time())
     
     while curr <= end_dt:
-        if curr.weekday() in [0, 2, 3] and curr not in holidays_dt:
+        if curr.weekday() in active_weekdays and curr not in holidays_dt:
             dates.append(curr)
         curr += timedelta(days=1)
 
     members = df['姓名 Name'].dropna().unique().tolist()
     gender_map = dict(zip(df['姓名 Name'], df['弟兄／姊妹 ( Br. / Sr. )']))
 
-    weekday_map = {0: "週一", 2: "週三", 3: "週四"}
+    weekday_map = {0: "週一", 1: "週二", 2: "週三", 3: "週四", 4: "週五"}
 
     avail_map = {}
     pref_map = {}
@@ -199,8 +214,11 @@ def run_scheduler(df, start_date, end_date, holidays_list, b_count, a_min, a_max
         fill_before = PatternFill("solid", fgColor="FCE5CD")
         fill_after = PatternFill("solid", fgColor="FFF2CC")
         
-        ws.append(["週別", "時段", "週一", "週三", "週四"])
-        for col in range(1, 6):
+        # 動態建立表頭 (根據所選星期)
+        active_w_names = [name for name, w_idx in weekday_options.items() if w_idx in active_weekdays]
+        header = ["週別", "時段"] + active_w_names
+        ws.append(header)
+        for col in range(1, len(header) + 1):
             cell = ws.cell(1, col)
             cell.fill, cell.font, cell.alignment, cell.border = fill_header, font_bold, align_center, border_all
             
@@ -213,29 +231,32 @@ def run_scheduler(df, start_date, end_date, holidays_list, b_count, a_min, a_max
         curr_row = 2
         week_count = 1
         for w_num, d_dict in grouped_dates.items():
-            m_date, w_date, th_date = d_dict.get(0), d_dict.get(2), d_dict.get(3)
-            
             ws.merge_cells(start_row=curr_row, start_column=1, end_row=curr_row+2, end_column=1)
             w_cell = ws.cell(curr_row, 1, f"第 {week_count} 週")
             w_cell.fill, w_cell.font, w_cell.alignment = fill_week, font_bold, align_center
             
+            # 日期列
             ws.cell(curr_row, 2, "日期").fill = fill_date
-            ws.cell(curr_row, 3, m_date.strftime("%m月%d日") if m_date else "-").fill = fill_week
-            ws.cell(curr_row, 4, w_date.strftime("%m月%d日") if w_date else "-").fill = fill_week
-            ws.cell(curr_row, 5, th_date.strftime("%m月%d日") if th_date else "-").fill = fill_week
-            
+            for idx, w_idx in enumerate(active_weekdays):
+                dt = d_dict.get(w_idx)
+                ws.cell(curr_row, 3 + idx, dt.strftime("%m月%d日") if dt else "-").fill = fill_week
+                
+            # 飯前列
             ws.cell(curr_row+1, 2, "飯前").fill = fill_before
-            ws.cell(curr_row+1, 3, "、".join([p for p in members if m_date and solver.Value(x[p, m_date, "飯前"]) == 1]))
-            ws.cell(curr_row+1, 4, "、".join([p for p in members if w_date and solver.Value(x[p, w_date, "飯前"]) == 1]))
-            ws.cell(curr_row+1, 5, "、".join([p for p in members if th_date and solver.Value(x[p, th_date, "飯前"]) == 1]))
-            
+            for idx, w_idx in enumerate(active_weekdays):
+                dt = d_dict.get(w_idx)
+                names = "、".join([p for p in members if dt and solver.Value(x[p, dt, "飯前"]) == 1])
+                ws.cell(curr_row+1, 3 + idx, names)
+                
+            # 飯後列
             ws.cell(curr_row+2, 2, "飯後").fill = fill_after
-            ws.cell(curr_row+2, 3, "、".join([p for p in members if m_date and solver.Value(x[p, m_date, "飯後"]) == 1]))
-            ws.cell(curr_row+2, 4, "、".join([p for p in members if w_date and solver.Value(x[p, w_date, "飯後"]) == 1]))
-            ws.cell(curr_row+2, 5, "、".join([p for p in members if th_date and solver.Value(x[p, th_date, "飯後"]) == 1]))
+            for idx, w_idx in enumerate(active_weekdays):
+                dt = d_dict.get(w_idx)
+                names = "、".join([p for p in members if dt and solver.Value(x[p, dt, "飯後"]) == 1])
+                ws.cell(curr_row+2, 3 + idx, names)
             
             for r in range(curr_row, curr_row+3):
-                for c in range(1, 6):
+                for c in range(1, len(header) + 1):
                     cell = ws.cell(r, c)
                     cell.font = font_bold if c <= 2 or r == curr_row else font_regular
                     cell.alignment, cell.border = align_center, border_all
@@ -245,9 +266,9 @@ def run_scheduler(df, start_date, end_date, holidays_list, b_count, a_min, a_max
             
         ws.column_dimensions['A'].width = 12
         ws.column_dimensions['B'].width = 10
-        ws.column_dimensions['C'].width = 30
-        ws.column_dimensions['D'].width = 30
-        ws.column_dimensions['E'].width = 30
+        for col_idx in range(3, len(header) + 1):
+            col_letter = openpyxl.utils.get_column_letter(col_idx)
+            ws.column_dimensions[col_letter].width = 30
 
         ws_stats = wb.create_sheet(title="個人權重統計")
         ws_stats.append(["姓名", "身份", "飯前次數 (2分)", "飯後次數 (1分)", "總權重積分", "偏好滿足次數"])
@@ -278,33 +299,36 @@ def run_scheduler(df, start_date, end_date, holidays_list, b_count, a_min, a_max
 
 # 主畫面展示
 if uploaded_file is not None:
-    st.success(f"✅ 成功讀取表單！共 {len(df_raw)} 位成員數據。")
-    
-    st.write("### 📌 當前人員離台 / 延後加入設定概覽")
-    col1, col2 = st.columns(2)
-    with col1:
-        st.info("**🛫 提前離台名單：**\n" + ("\n".join([f"- {k}: {v}" for k, v in leave_dates_gui.items()]) if leave_dates_gui else "無"))
-    with col2:
-        st.info("**🛬 延後加入名單：**\n" + ("\n".join([f"- {k}: {v}" for k, v in join_dates_gui.items()]) if join_dates_gui else "無"))
-    
-    if st.button("🚀 開始自動排班", type="primary"):
-        with st.spinner("演算法正在計算最佳且公平的排班組合..."):
-            excel_data = run_scheduler(
-                df_raw, start_date, end_date, selected_holidays, 
-                before_count, after_min, after_max, 
-                leave_dates_gui, join_dates_gui
-            )
-            
-            if excel_data:
-                st.balloons()
-                st.success("🎉 排班完成！請下載 Excel：")
-                st.download_button(
-                    label="📥 下載彩色版排班 Excel 檔案",
-                    data=excel_data,
-                    file_name="學期飯食服事排班結果_彩色版.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    if not selected_weekdays:
+        st.error("⚠️ 請至少在左側邊欄選擇一個「每週服事日期」！")
+    else:
+        st.success(f"✅ 成功讀取表單！共 {len(df_raw)} 位成員數據。")
+        
+        st.write("### 📌 當前人員離台 / 延後加入設定概覽")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.info("**🛫 提前離台名單：**\n" + ("\n".join([f"- {k}: {v}" for k, v in leave_dates_gui.items()]) if leave_dates_gui else "無"))
+        with col2:
+            st.info("**🛬 延後加入名單：**\n" + ("\n".join([f"- {k}: {v}" for k, v in join_dates_gui.items()]) if join_dates_gui else "無"))
+        
+        if st.button("🚀 開始自動排班", type="primary"):
+            with st.spinner("演算法正在計算最佳且公平的排班組合..."):
+                excel_data = run_scheduler(
+                    df_raw, start_date, end_date, selected_weekdays, selected_holidays, 
+                    before_count, after_min, after_max, 
+                    leave_dates_gui, join_dates_gui
                 )
-            else:
-                st.error("❌ 無法找到符合限制條件的排班組合，請嘗試調整離台日期或人數限制。")
+                
+                if excel_data:
+                    st.balloons()
+                    st.success("🎉 排班完成！請下載 Excel：")
+                    st.download_button(
+                        label="📥 下載彩色版排班 Excel 檔案",
+                        data=excel_data,
+                        file_name="學期飯食服事排班結果_彩色版.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+                else:
+                    st.error("❌ 無法找到符合限制條件的排班組合，請嘗試調整離台日期或人數限制。")
 else:
     st.info("👈 請先於左側邊欄上傳 Google 表單 CSV 檔案以開始排班。")
