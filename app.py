@@ -9,10 +9,10 @@ from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 st.set_page_config(page_title="飯食服事自動排班系統", page_icon="🍞", layout="wide")
 
 st.title("🍞 飯食服事自動排班系統")
-st.write("歡迎使用！請上傳從 Google 表單下載的原始 CSV 檔案，並在左側調整學期條件與人員離台/請假設定。")
+st.write("歡迎使用！請上傳從 Google 表單下載的原始 CSV 或是 Excel 檔案，並在左側調整學期條件與人員離台/請假設定。")
 
-# 1. 檔案上傳
-uploaded_file = st.sidebar.file_uploader("📂 上傳 Google 表單 CSV 檔案", type=["csv"])
+# 1. 檔案上傳 (同時支援 csv, xlsx, xls)
+uploaded_file = st.sidebar.file_uploader("📂 上傳表單檔案 (CSV 或 Excel)", type=["csv", "xlsx", "xls"])
 
 # 2. 側邊欄條件設定 (GUI 化)
 st.sidebar.header("⚙️ 1. 學期與基本設定")
@@ -20,7 +20,7 @@ st.sidebar.header("⚙️ 1. 學期與基本設定")
 start_date = st.sidebar.date_input("學期開始日期", datetime(2025, 9, 15))
 end_date = st.sidebar.date_input("學期結束日期", datetime(2025, 12, 18))
 
-# 星期選取設定 (0:週一, 1:週二, 2:週三, 3:週四, 4:週五)
+# 星期選取設定
 weekday_options = {
     "週一": 0,
     "週二": 1,
@@ -54,8 +54,24 @@ after_max = st.sidebar.number_input("飯後最多人數", min_value=1, max_value
 leave_dates_gui = {}
 join_dates_gui = {}
 
+df_raw = None
+
 if uploaded_file is not None:
-    df_raw = pd.read_csv(uploaded_file)
+    # 判斷副檔名並進行讀取
+    file_name = uploaded_file.name
+    try:
+        if file_name.endswith('.csv'):
+            try:
+                df_raw = pd.read_csv(uploaded_file, encoding='utf-8')
+            except UnicodeDecodeError:
+                uploaded_file.seek(0)
+                df_raw = pd.read_csv(uploaded_file, encoding='cp950')
+        else:
+            df_raw = pd.read_excel(uploaded_file)
+    except Exception as e:
+        st.error(f"❌ 讀取檔案失敗：{e}。請確認檔案格式是否正確。")
+
+if df_raw is not None:
     members_list = df_raw['姓名 Name'].dropna().unique().tolist()
     
     st.sidebar.markdown("---")
@@ -214,7 +230,6 @@ def run_scheduler(df, start_date, end_date, active_weekdays, holidays_list, b_co
         fill_before = PatternFill("solid", fgColor="FCE5CD")
         fill_after = PatternFill("solid", fgColor="FFF2CC")
         
-        # 動態建立表頭 (根據所選星期)
         active_w_names = [name for name, w_idx in weekday_options.items() if w_idx in active_weekdays]
         header = ["週別", "時段"] + active_w_names
         ws.append(header)
@@ -235,20 +250,17 @@ def run_scheduler(df, start_date, end_date, active_weekdays, holidays_list, b_co
             w_cell = ws.cell(curr_row, 1, f"第 {week_count} 週")
             w_cell.fill, w_cell.font, w_cell.alignment = fill_week, font_bold, align_center
             
-            # 日期列
             ws.cell(curr_row, 2, "日期").fill = fill_date
             for idx, w_idx in enumerate(active_weekdays):
                 dt = d_dict.get(w_idx)
                 ws.cell(curr_row, 3 + idx, dt.strftime("%m月%d日") if dt else "-").fill = fill_week
                 
-            # 飯前列
             ws.cell(curr_row+1, 2, "飯前").fill = fill_before
             for idx, w_idx in enumerate(active_weekdays):
                 dt = d_dict.get(w_idx)
                 names = "、".join([p for p in members if dt and solver.Value(x[p, dt, "飯前"]) == 1])
                 ws.cell(curr_row+1, 3 + idx, names)
                 
-            # 飯後列
             ws.cell(curr_row+2, 2, "飯後").fill = fill_after
             for idx, w_idx in enumerate(active_weekdays):
                 dt = d_dict.get(w_idx)
@@ -298,7 +310,7 @@ def run_scheduler(df, start_date, end_date, active_weekdays, holidays_list, b_co
         return None
 
 # 主畫面展示
-if uploaded_file is not None:
+if df_raw is not None:
     if not selected_weekdays:
         st.error("⚠️ 請至少在左側邊欄選擇一個「每週服事日期」！")
     else:
@@ -331,4 +343,4 @@ if uploaded_file is not None:
                 else:
                     st.error("❌ 無法找到符合限制條件的排班組合，請嘗試調整離台日期或人數限制。")
 else:
-    st.info("👈 請先於左側邊欄上傳 Google 表單 CSV 檔案以開始排班。")
+    st.info("👈 請先於左側邊欄上傳 Google 表單檔案 (CSV 或 Excel) 以開始排班。")
