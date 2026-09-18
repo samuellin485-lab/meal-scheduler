@@ -11,50 +11,36 @@ st.set_page_config(page_title="飯食服事自動排班系統", page_icon="🍞"
 st.title("🍞 飯食服事自動排班系統")
 st.write("歡迎使用！請上傳從 Google 表單下載的原始 CSV 或是 Excel 檔案，並在左側調整學期條件與人員離台/請假設定。")
 
-# 1. 檔案上傳 (同時支援 csv, xlsx, xls)
+# 1. 檔案上傳
 uploaded_file = st.sidebar.file_uploader("📂 上傳表單檔案 (CSV 或 Excel)", type=["csv", "xlsx", "xls"])
 
 # 2. 側邊欄條件設定 (GUI 化)
 st.sidebar.header("⚙️ 1. 學期與基本設定")
 
-# 預設日期改為今日
 today = datetime.now().date()
 start_date = st.sidebar.date_input("學期開始日期", today)
 end_date = st.sidebar.date_input("學期結束日期", today + timedelta(days=90))
 
-# 星期選取設定 (預設空白)
-weekday_options = {
-    "週一": 0,
-    "週二": 1,
-    "週三": 2,
-    "週四": 3,
-    "週五": 4
-}
-selected_weekday_names = st.sidebar.multiselect(
-    "🗓️ 選擇每週服事日期",
-    options=list(weekday_options.keys()),
-    default=[]  # 預設空白
-)
+weekday_options = {"週一": 0, "週二": 1, "週三": 2, "週四": 3, "週五": 4}
+selected_weekday_names = st.sidebar.multiselect("🗓️ 選擇每週服事日期", options=list(weekday_options.keys()), default=[])
 selected_weekdays = [weekday_options[name] for name in selected_weekday_names]
 
-# 國定假日設定 (預設空白)
 date_range_days = (end_date - start_date).days if end_date >= start_date else 0
 selected_holidays = st.sidebar.multiselect(
     "國定假日 / 不排班日期", 
     options=[start_date + timedelta(days=i) for i in range(date_range_days + 1)],
-    default=[], # 預設空白
+    default=[],
     format_func=lambda d: d.strftime("%Y/%m/%d (%a)")
 )
 
-# 人力需求設定
 st.sidebar.subheader("👥 人力需求設定")
 before_count = st.sidebar.number_input("飯前人數 (固定同性別)", min_value=1, max_value=4, value=2)
 after_min = st.sidebar.number_input("飯後最少人數", min_value=1, max_value=8, value=4)
 after_max = st.sidebar.number_input("飯後最多人數", min_value=1, max_value=8, value=5)
 
-# --- 人員特殊出勤 GUI 設定區 ---
 leave_dates_gui = {}
 join_dates_gui = {}
+custom_weights_gui = {} # 存放手動調整的個人權重
 
 df_raw = None
 
@@ -78,30 +64,38 @@ if df_raw is not None:
     st.sidebar.markdown("---")
     st.sidebar.header("✈️ 2. 特定人員出勤限制")
 
-    # 提前離台人員設定 (預設空白)
-    st.sidebar.subheader("🛫 提前離台人員設定")
-    selected_leave_members = st.sidebar.multiselect(
-        "選擇離台成員",
-        options=members_list,
-        default=[] # 預設空白
-    )
+    selected_leave_members = st.sidebar.multiselect("選擇離台成員", options=members_list, default=[])
     for m in selected_leave_members:
         l_date = st.sidebar.date_input(f"【{m}】最後服事/離台日期", value=end_date, key=f"leave_{m}")
         leave_dates_gui[m] = l_date
 
-    # 延後加入人員設定 (預設空白)
-    st.sidebar.subheader("🛬 延後加入人員設定")
-    selected_join_members = st.sidebar.multiselect(
-        "選擇延後加入成員",
-        options=members_list,
-        default=[] # 預設空白
-    )
+    selected_join_members = st.sidebar.multiselect("選擇延後加入成員", options=members_list, default=[])
     for m in selected_join_members:
         j_date = st.sidebar.date_input(f"【{m}】開始可服事日期", value=start_date, key=f"join_{m}")
         join_dates_gui[m] = j_date
 
+    # --- 新增：手動調整特定人員權重功能 ---
+    st.sidebar.markdown("---")
+    st.sidebar.header("⚖️ 3. 特定人員權重與頻率微調")
+    selected_weight_members = st.sidebar.multiselect("選擇需特殊調整服事頻率的成員", options=members_list, default=[])
+    
+    for m in selected_weight_members:
+        # 提供選項：少排服事 (-20 分加成)、多排服事 (+20 分加成) 或 自訂
+        weight_pref = st.sidebar.selectbox(
+            f"【{m}】服事頻率調整",
+            options=["少排服事 (減輕負擔)", "正常排班", "多排服事 (積極參與)"],
+            index=0,
+            key=f"weight_{m}"
+        )
+        if weight_pref == "少排服事 (減輕負擔)":
+            custom_weights_gui[m] = -20
+        elif weight_pref == "多排服事 (積極參與)":
+            custom_weights_gui[m] = 20
+        else:
+            custom_weights_gui[m] = 0
+
 # 核心排班函數
-def run_scheduler(df, start_date, end_date, active_weekdays, holidays_list, b_count, a_min, a_max, leave_map, join_map):
+def run_scheduler(df, start_date, end_date, active_weekdays, holidays_list, b_count, a_min, a_max, leave_map, join_map, custom_weights):
     holidays_dt = [datetime.combine(h, datetime.min.time()) for h in holidays_list]
     leave_dates = {k: datetime.combine(v, datetime.min.time()) for k, v in leave_map.items()}
     join_dates = {k: datetime.combine(v, datetime.min.time()) for k, v in join_map.items()}
@@ -117,7 +111,6 @@ def run_scheduler(df, start_date, end_date, active_weekdays, holidays_list, b_co
 
     members = df['姓名 Name'].dropna().unique().tolist()
     gender_map = dict(zip(df['姓名 Name'], df['弟兄／姊妹 ( Br. / Sr. )']))
-
     weekday_map = {0: "週一", 1: "週二", 2: "週三", 3: "週四", 4: "週五"}
 
     avail_map = {}
@@ -187,7 +180,14 @@ def run_scheduler(df, start_date, end_date, active_weekdays, holidays_list, b_co
                 model.Add(x[p, d, "飯前"] == 0)
                 model.Add(x[p, d, "飯後"] == 0)
 
-    scores = [sum(x[p, d, "飯前"] * 2 + x[p, d, "飯後"] * 1 for d in dates) for p in members]
+    # 計算每人積分與目標
+    member_scores = {}
+    for p in members:
+        # 個人基本服事積分
+        base_score = sum(x[p, d, "飯前"] * 2 + x[p, d, "飯後"] * 1 for d in dates)
+        member_scores[p] = base_score
+
+    scores = list(member_scores.values())
     max_s, min_s = model.NewIntVar(0, 100, 'max_s'), model.NewIntVar(0, 100, 'min_s')
     model.AddMaxEquality(max_s, scores)
     model.AddMinEquality(min_s, scores)
@@ -199,7 +199,16 @@ def run_scheduler(df, start_date, end_date, active_weekdays, holidays_list, b_co
             if w_str in pref_map[p]["飯前"]: pref_score_terms.append(x[p, d, "飯前"] * 3)
             if w_str in pref_map[p]["飯後"]: pref_score_terms.append(x[p, d, "飯後"] * 2)
 
-    model.Minimize((max_s - min_s) * 100 - sum(pref_score_terms))
+    # 加入手動調整的個人權重懲罰/獎勵項
+    custom_penalty_terms = []
+    for p, weight_adj in custom_weights.items():
+        if p in members:
+            # 總次數 * 調整權重 (若是少排，給予較高的虛擬成本懲罰，讓模型減少排他)
+            total_shifts = sum(x[p, d, "飯前"] + x[p, d, "飯後"] for d in dates)
+            custom_penalty_terms.append(total_shifts * weight_adj)
+
+    # 目標：極小化(最大分-最小分)，極大化偏好，並套用自訂權重
+    model.Minimize((max_s - min_s) * 100 - sum(pref_score_terms) + sum(custom_penalty_terms))
 
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds = 15.0
@@ -308,19 +317,21 @@ if df_raw is not None:
     else:
         st.success(f"✅ 成功讀取表單！共 {len(df_raw)} 位成員數據。")
         
-        st.write("### 📌 當前人員離台 / 延後加入設定概覽")
-        col1, col2 = st.columns(2)
+        st.write("### 📌 當前特殊排班設定概覽")
+        col1, col2, col3 = st.columns(3)
         with col1:
             st.info("**🛫 提前離台名單：**\n" + ("\n".join([f"- {k}: {v}" for k, v in leave_dates_gui.items()]) if leave_dates_gui else "無"))
         with col2:
             st.info("**🛬 延後加入名單：**\n" + ("\n".join([f"- {k}: {v}" for k, v in join_dates_gui.items()]) if join_dates_gui else "無"))
+        with col3:
+            st.info("**⚖️ 頻率微調名單：**\n" + ("\n".join([f"- {k}: {'少排' if v>0 else '多排'}" for k, v in custom_weights_gui.items() if v!=0]) if custom_weights_gui else "無"))
         
         if st.button("🚀 開始自動排班", type="primary"):
             with st.spinner("演算法正在計算最佳且公平的排班組合..."):
                 excel_data = run_scheduler(
                     df_raw, start_date, end_date, selected_weekdays, selected_holidays, 
                     before_count, after_min, after_max, 
-                    leave_dates_gui, join_dates_gui
+                    leave_dates_gui, join_dates_gui, custom_weights_gui
                 )
                 
                 if excel_data:
