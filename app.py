@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import io
 from datetime import datetime, timedelta
+import math
 from ortools.sat.python import cp_model
 import openpyxl
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
@@ -9,7 +10,7 @@ from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 st.set_page_config(page_title="飯食服事自動排班系統", page_icon="🍞", layout="wide")
 
 st.title("🍞 飯食服事自動排班系統")
-st.write("歡迎使用！請上傳從 Google 表單下載的原始 CSV 或是 Excel 檔案，並在左側調整學期條件與人員離台/請假設定。")
+st.write("歡迎使用！請上傳從 Google 表單下載的原始 CSV 或是 Excel 檔案，並在左側調整學期條件與人員離台/請假/次數微調設定。")
 
 # 1. 檔案上傳
 uploaded_file = st.sidebar.file_uploader("📂 上傳表單檔案 (CSV 或 Excel)", type=["csv", "xlsx", "xls"])
@@ -40,7 +41,7 @@ after_max = st.sidebar.number_input("飯後最多人數", min_value=1, max_value
 
 leave_dates_gui = {}
 join_dates_gui = {}
-custom_weights_gui = {} # 存放手動調整的個人權重
+custom_adjustments_gui = {} # 存放個人飯前/飯後次數增減調整量
 
 df_raw = None
 
@@ -74,28 +75,20 @@ if df_raw is not None:
         j_date = st.sidebar.date_input(f"【{m}】開始可服事日期", value=start_date, key=f"join_{m}")
         join_dates_gui[m] = j_date
 
-    # --- 新增：手動調整特定人員權重功能 ---
+    # --- 新增：特定人員「飯前/飯後次數精準增減」 ---
     st.sidebar.markdown("---")
-    st.sidebar.header("⚖️ 3. 特定人員權重與頻率微調")
-    selected_weight_members = st.sidebar.multiselect("選擇需特殊調整服事頻率的成員", options=members_list, default=[])
+    st.sidebar.header("⚖️ 3. 特定人員服事次數微調")
+    selected_adj_members = st.sidebar.multiselect("選擇需微調服事次數的成員", options=members_list, default=[])
     
-    for m in selected_weight_members:
-        # 提供選項：少排服事 (-20 分加成)、多排服事 (+20 分加成) 或 自訂
-        weight_pref = st.sidebar.selectbox(
-            f"【{m}】服事頻率調整",
-            options=["少排服事 (減輕負擔)", "正常排班", "多排服事 (積極參與)"],
-            index=0,
-            key=f"weight_{m}"
-        )
-        if weight_pref == "少排服事 (減輕負擔)":
-            custom_weights_gui[m] = -20
-        elif weight_pref == "多排服事 (積極參與)":
-            custom_weights_gui[m] = 20
-        else:
-            custom_weights_gui[m] = 0
+    for m in selected_adj_members:
+        st.sidebar.write(f"**👤 【{m}】次數調整**")
+        b_adj = st.sidebar.number_input(f"【{m}】飯前次數增減 (負數代表減少)", min_value=-10, max_value=10, value=0, key=f"badj_{m}")
+        a_adj = st.sidebar.number_input(f"【{m}】飯後次數增減 (負數代表減少)", min_value=-10, max_value=10, value=0, key=f"aadj_{m}")
+        if b_adj != 0 or a_adj != 0:
+            custom_adjustments_gui[m] = {"飯前": b_adj, "飯後": a_adj}
 
 # 核心排班函數
-def run_scheduler(df, start_date, end_date, active_weekdays, holidays_list, b_count, a_min, a_max, leave_map, join_map, custom_weights):
+def run_scheduler(df, start_date, end_date, active_weekdays, holidays_list, b_count, a_min, a_max, leave_map, join_map, custom_adjustments):
     holidays_dt = [datetime.combine(h, datetime.min.time()) for h in holidays_list]
     leave_dates = {k: datetime.combine(v, datetime.min.time()) for k, v in leave_map.items()}
     join_dates = {k: datetime.combine(v, datetime.min.time()) for k, v in join_map.items()}
@@ -112,6 +105,12 @@ def run_scheduler(df, start_date, end_date, active_weekdays, holidays_list, b_co
     members = df['姓名 Name'].dropna().unique().tolist()
     gender_map = dict(zip(df['姓名 Name'], df['弟兄／姊妹 ( Br. / Sr. )']))
     weekday_map = {0: "週一", 1: "週二", 2: "週三", 3: "週四", 4: "週五"}
+
+    # 估算平均服事次數做為微調基準
+    total_dates = len(dates)
+    total_members = len(members) if len(members) > 0 else 1
+    avg_before = (total_dates * b_count) / total_members
+    avg_after = (total_dates * ((a_min + a_max) / 2)) / total_members
 
     avail_map = {}
     pref_map = {}
@@ -180,14 +179,23 @@ def run_scheduler(df, start_date, end_date, active_weekdays, holidays_list, b_co
                 model.Add(x[p, d, "飯前"] == 0)
                 model.Add(x[p, d, "飯後"] == 0)
 
-    # 計算每人積分與目標
-    member_scores = {}
-    for p in members:
-        # 個人基本服事積分
-        base_score = sum(x[p, d, "飯前"] * 2 + x[p, d, "飯後"] * 1 for d in dates)
-        member_scores[p] = base_score
+    # 套用精準次數控制（上限限制）
+    for p, adj in custom_adjustments.items():
+        if p in members:
+            b_adj = adj.get("飯前", 0)
+            a_adj = adj.get("飯後", 0)
+            
+            # 飯前次數控制
+            if b_adj != 0:
+                target_b = max(0, math.floor(avg_before + b_adj))
+                model.Add(sum(x[p, d, "飯前"] for d in dates) <= target_b)
+                
+            # 飯後次數控制
+            if a_adj != 0:
+                target_a = max(0, math.floor(avg_after + a_adj))
+                model.Add(sum(x[p, d, "飯後"] for d in dates) <= target_a)
 
-    scores = list(member_scores.values())
+    scores = [sum(x[p, d, "飯前"] * 2 + x[p, d, "飯後"] * 1 for d in dates) for p in members]
     max_s, min_s = model.NewIntVar(0, 100, 'max_s'), model.NewIntVar(0, 100, 'min_s')
     model.AddMaxEquality(max_s, scores)
     model.AddMinEquality(min_s, scores)
@@ -199,16 +207,7 @@ def run_scheduler(df, start_date, end_date, active_weekdays, holidays_list, b_co
             if w_str in pref_map[p]["飯前"]: pref_score_terms.append(x[p, d, "飯前"] * 3)
             if w_str in pref_map[p]["飯後"]: pref_score_terms.append(x[p, d, "飯後"] * 2)
 
-    # 加入手動調整的個人權重懲罰/獎勵項
-    custom_penalty_terms = []
-    for p, weight_adj in custom_weights.items():
-        if p in members:
-            # 總次數 * 調整權重 (若是少排，給予較高的虛擬成本懲罰，讓模型減少排他)
-            total_shifts = sum(x[p, d, "飯前"] + x[p, d, "飯後"] for d in dates)
-            custom_penalty_terms.append(total_shifts * weight_adj)
-
-    # 目標：極小化(最大分-最小分)，極大化偏好，並套用自訂權重
-    model.Minimize((max_s - min_s) * 100 - sum(pref_score_terms) + sum(custom_penalty_terms))
+    model.Minimize((max_s - min_s) * 100 - sum(pref_score_terms))
 
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds = 15.0
@@ -324,14 +323,15 @@ if df_raw is not None:
         with col2:
             st.info("**🛬 延後加入名單：**\n" + ("\n".join([f"- {k}: {v}" for k, v in join_dates_gui.items()]) if join_dates_gui else "無"))
         with col3:
-            st.info("**⚖️ 頻率微調名單：**\n" + ("\n".join([f"- {k}: {'少排' if v>0 else '多排'}" for k, v in custom_weights_gui.items() if v!=0]) if custom_weights_gui else "無"))
+            adj_info = [f"- {k}: 飯前({v['飯前']:+d}), 飯後({v['飯後']:+d})" for k, v in custom_adjustments_gui.items()]
+            st.info("**⚖️ 次數微調名單：**\n" + ("\n".join(adj_info) if adj_info else "無"))
         
         if st.button("🚀 開始自動排班", type="primary"):
             with st.spinner("演算法正在計算最佳且公平的排班組合..."):
                 excel_data = run_scheduler(
                     df_raw, start_date, end_date, selected_weekdays, selected_holidays, 
                     before_count, after_min, after_max, 
-                    leave_dates_gui, join_dates_gui, custom_weights_gui
+                    leave_dates_gui, join_dates_gui, custom_adjustments_gui
                 )
                 
                 if excel_data:
@@ -344,6 +344,6 @@ if df_raw is not None:
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
                 else:
-                    st.error("❌ 無法找到符合限制條件的排班組合，請嘗試調整離台日期或人數限制。")
+                    st.error("❌ 無法找到符合限制條件的排班組合，請嘗試調整次數限制或人數設定。")
 else:
     st.info("👈 請先於左側邊欄上傳 Google 表單檔案 (CSV 或 Excel) 以開始排班。")
