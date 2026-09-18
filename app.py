@@ -106,7 +106,6 @@ def run_scheduler(df, start_date, end_date, active_weekdays, holidays_list, b_co
     gender_map = dict(zip(df['姓名 Name'], df['弟兄／姊妹 ( Br. / Sr. )']))
     weekday_map = {0: "週一", 1: "週二", 2: "週三", 3: "週四", 4: "週五"}
 
-    # 估算平均服事次數做為微調基準
     total_dates = len(dates)
     total_members = len(members) if len(members) > 0 else 1
     avg_before = (total_dates * b_count) / total_members
@@ -179,7 +178,7 @@ def run_scheduler(df, start_date, end_date, active_weekdays, holidays_list, b_co
                 model.Add(x[p, d, "飯前"] == 0)
                 model.Add(x[p, d, "飯後"] == 0)
 
-    # 精準次數微調約束與補班防範
+    # 1. 硬性次數上限控制
     for p, adj in custom_adjustments.items():
         if p in members:
             b_adj = adj.get("飯前", 0)
@@ -193,14 +192,24 @@ def run_scheduler(df, start_date, end_date, active_weekdays, holidays_list, b_co
                 target_a = max(0, math.floor(avg_after + a_adj))
                 model.Add(sum(x[p, d, "飯後"] for d in dates) <= target_a)
 
-            # 防止演算法「拿飯前補飯後」
-            if a_adj < 0 and b_adj == 0:
-                model.Add(sum(x[p, d, "飯前"] for d in dates) <= math.floor(avg_before))
+    # 2. 公平性與調整分補償 (關鍵修改：將微調成員的期望減少分補加回虛擬分數，防止拉低其他人)
+    adjusted_scores = []
+    for p in members:
+        actual_score = sum(x[p, d, "飯前"] * 2 + x[p, d, "飯後"] * 1 for d in dates)
+        
+        # 若該成員有微調，將被扣除的分數補回虛擬分數進行公平性比較
+        expected_deduction = 0
+        if p in custom_adjustments:
+            b_adj = custom_adjustments[p].get("飯前", 0)
+            a_adj = custom_adjustments[p].get("飯後", 0)
+            expected_deduction = (abs(b_adj) * 2 + abs(a_adj) * 1) if (b_adj < 0 or a_adj < 0) else 0
 
-    scores = [sum(x[p, d, "飯前"] * 2 + x[p, d, "飯後"] * 1 for d in dates) for p in members]
+        virtual_score = actual_score + expected_deduction
+        adjusted_scores.append(virtual_score)
+
     max_s, min_s = model.NewIntVar(0, 100, 'max_s'), model.NewIntVar(0, 100, 'min_s')
-    model.AddMaxEquality(max_s, scores)
-    model.AddMinEquality(min_s, scores)
+    model.AddMaxEquality(max_s, adjusted_scores)
+    model.AddMinEquality(min_s, adjusted_scores)
 
     pref_score_terms = []
     for p in members:
