@@ -61,7 +61,7 @@ if uploaded_file is not None:
 
 if df_raw is not None:
     # 找到正確的姓名欄位名稱
-    name_col = [c for c in df_raw.columns if "姓名" in c or "Name" in c]
+    name_col = [c for c in df_raw.columns if "姓名" in str(c) or "Name" in str(c)]
     name_col_name = name_col[0] if name_col else df_raw.columns[0]
     
     # 清除姓名前後空格
@@ -108,13 +108,13 @@ def run_scheduler(df, start_date, end_date, active_weekdays, holidays_list, b_co
             dates.append(curr)
         curr += timedelta(days=1)
 
-    name_col = [c for c in df.columns if "姓名" in c or "Name" in c][0]
-    gender_col = [c for c in df.columns if "弟兄" in c or "姊妹" in c or "Br." in c][0]
+    name_col = [c for c in df.columns if "姓名" in str(c) or "Name" in str(c)][0]
+    gender_col = [c for c in df.columns if "弟兄" in str(c) or "姊妹" in str(c) or "Br." in str(c)][0]
 
     members = [str(m).strip() for m in df[name_col].dropna().unique().tolist() if str(m).strip() and str(m).strip() != "nan"]
     gender_map = dict(zip(df[name_col].astype(str).str.strip(), df[gender_col]))
     
-    # 星期關鍵字對應 (支援廣泛名稱)
+    # 廣泛相容星期與時段關鍵字
     weekday_keys = {
         0: ["週一", "星期一", "禮拜一", "mon"],
         1: ["週二", "星期二", "禮拜二", "tue"],
@@ -148,31 +148,34 @@ def run_scheduler(df, start_date, end_date, active_weekdays, holidays_list, b_co
             for s in ["飯前", "飯後"]:
                 s_keywords = shift_keys[s]
                 
-                # 尋找同時包含「星期關鍵字」與「時段關鍵字」，且「絕不包含偏好」的正式出勤欄位
                 matched_col = None
                 for col in df.columns:
-                    col_lower = str(col).lower()
-                    if "偏好" in col_lower or "preference" in col_lower:
-                        continue  # 嚴格排除偏好欄位
+                    col_clean = str(col).replace("\n", "").replace(" ", "").lower()
                     
-                    if any(w_k in col_lower for w_k in w_keywords) and any(s_k in col_lower for s_k in s_keywords):
+                    # 嚴格剔除偏好欄位
+                    if "偏好" in col_clean or "preference" in col_clean:
+                        continue
+                    
+                    if any(w_k in col_clean for w_k in w_keywords) and any(s_k in col_clean for s_k in s_keywords):
                         matched_col = col
                         break
                 
                 if matched_col:
-                    val = str(row[matched_col]).strip().lower()
-                    # 嚴格檢查「否決關鍵字」
-                    if any(k in val for k in ["不", "否", "no", "not", "0", "無法", "忙碌", "x"]):
+                    val = str(row[matched_col]).strip().lower().replace("\n", "").replace(" ", "")
+                    
+                    # 擴充否決關鍵字，優先攔截
+                    no_keywords = ["不", "否", "no", "not", "0", "無法", "忙碌", "x", "難", "拒"]
+                    yes_keywords = ["可以", "可", "1", "yes", "available", "ok", "v", "圈"]
+                    
+                    if any(k in val for k in no_keywords):
                         avail_map[name][(d, s)] = 0
-                    elif any(k in val for k in ["可以", "可", "1", "yes", "available", "ok", "v", "圈"]):
+                    elif any(k in val for k in yes_keywords):
                         avail_map[name][(d, s)] = 1
                     else:
-                        avail_map[name][(d, s)] = 0 # 預設無法出席
+                        avail_map[name][(d, s)] = 0
                 else:
-                    # 若完全找不到對應出勤欄位，為求安全，設為無法排班 (0)
                     avail_map[name][(d, s)] = 0
 
-        # 解析個人偏好欄位
         pref_b_col = [c for c in df.columns if ("偏好" in str(c) or "preference" in str(c).lower()) and ("飯前" in str(c) or "餐前" in str(c))]
         pref_a_col = [c for c in df.columns if ("偏好" in str(c) or "preference" in str(c).lower()) and ("飯後" in str(c) or "餐後" in str(c))]
         if pref_b_col and not pd.isna(row[pref_b_col[0]]):
