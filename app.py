@@ -41,7 +41,7 @@ after_max = st.sidebar.number_input("飯後最多人數", min_value=1, max_value
 
 leave_dates_gui = {}
 join_dates_gui = {}
-custom_adjustments_gui = {} # 存放個人飯前/飯後次數增減調整量
+custom_adjustments_gui = {}
 
 df_raw = None
 
@@ -60,7 +60,13 @@ if uploaded_file is not None:
         st.error(f"❌ 讀取檔案失敗：{e}。請確認檔案格式是否正確。")
 
 if df_raw is not None:
-    members_list = df_raw['姓名 Name'].dropna().unique().tolist()
+    # 找到正確的姓名欄位名稱
+    name_col = [c for c in df_raw.columns if "姓名" in c or "Name" in c]
+    name_col_name = name_col[0] if name_col else df_raw.columns[0]
+    
+    # 清除姓名前後空格
+    df_raw[name_col_name] = df_raw[name_col_name].astype(str).str.strip()
+    members_list = [m for m in df_raw[name_col_name].dropna().unique().tolist() if m and m != "nan"]
     
     st.sidebar.markdown("---")
     st.sidebar.header("✈️ 2. 特定人員出勤限制")
@@ -102,9 +108,24 @@ def run_scheduler(df, start_date, end_date, active_weekdays, holidays_list, b_co
             dates.append(curr)
         curr += timedelta(days=1)
 
-    members = df['姓名 Name'].dropna().unique().tolist()
-    gender_map = dict(zip(df['姓名 Name'], df['弟兄／姊妹 ( Br. / Sr. )']))
-    weekday_map = {0: "週一", 1: "週二", 2: "週三", 3: "週四", 4: "週五"}
+    name_col = [c for c in df.columns if "姓名" in c or "Name" in c][0]
+    gender_col = [c for c in df.columns if "弟兄" in c or "姊妹" in c or "Br." in c][0]
+
+    members = [str(m).strip() for m in df[name_col].dropna().unique().tolist() if str(m).strip() and str(m).strip() != "nan"]
+    gender_map = dict(zip(df[name_col].astype(str).str.strip(), df[gender_col]))
+    
+    # 星期關鍵字對應 (支援廣泛名稱)
+    weekday_keys = {
+        0: ["週一", "星期一", "禮拜一", "mon"],
+        1: ["週二", "星期二", "禮拜二", "tue"],
+        2: ["週三", "星期三", "禮拜三", "wed"],
+        3: ["週四", "星期四", "禮拜四", "thu"],
+        4: ["週五", "星期五", "禮拜五", "fri"]
+    }
+    shift_keys = {
+        "飯前": ["飯前", "餐前", "before"],
+        "飯後": ["飯後", "餐後", "after"]
+    }
 
     total_dates = len(dates)
     total_members = len(members) if len(members) > 0 else 1
@@ -115,24 +136,45 @@ def run_scheduler(df, start_date, end_date, active_weekdays, holidays_list, b_co
     pref_map = {}
 
     for _, row in df.iterrows():
-        name = row['姓名 Name']
-        if pd.isna(name): continue
+        name = str(row[name_col]).strip()
+        if not name or name == "nan": continue
         avail_map[name] = {}
         pref_map[name] = {"飯前": [], "飯後": []}
         
         for d in dates:
-            w_str = weekday_map[d.weekday()]
+            w_idx = d.weekday()
+            w_keywords = weekday_keys[w_idx]
+            
             for s in ["飯前", "飯後"]:
-                col_name = [c for c in df.columns if w_str in c and s in c]
-                if col_name:
-                    val = str(row[col_name[0]])
-                    is_available = "1" in val or "可以" in val or "Available" in val
-                    avail_map[name][(d, s)] = 1 if is_available else 0
+                s_keywords = shift_keys[s]
+                
+                # 尋找同時包含「星期關鍵字」與「時段關鍵字」，且「絕不包含偏好」的正式出勤欄位
+                matched_col = None
+                for col in df.columns:
+                    col_lower = str(col).lower()
+                    if "偏好" in col_lower or "preference" in col_lower:
+                        continue  # 嚴格排除偏好欄位
+                    
+                    if any(w_k in col_lower for w_k in w_keywords) and any(s_k in col_lower for s_k in s_keywords):
+                        matched_col = col
+                        break
+                
+                if matched_col:
+                    val = str(row[matched_col]).strip().lower()
+                    # 嚴格檢查「否決關鍵字」
+                    if any(k in val for k in ["不", "否", "no", "not", "0", "無法", "忙碌", "x"]):
+                        avail_map[name][(d, s)] = 0
+                    elif any(k in val for k in ["可以", "可", "1", "yes", "available", "ok", "v", "圈"]):
+                        avail_map[name][(d, s)] = 1
+                    else:
+                        avail_map[name][(d, s)] = 0 # 預設無法出席
                 else:
-                    avail_map[name][(d, s)] = 1
+                    # 若完全找不到對應出勤欄位，為求安全，設為無法排班 (0)
+                    avail_map[name][(d, s)] = 0
 
-        pref_b_col = [c for c in df.columns if "偏好的飯前" in c]
-        pref_a_col = [c for c in df.columns if "偏好的飯後" in c]
+        # 解析個人偏好欄位
+        pref_b_col = [c for c in df.columns if ("偏好" in str(c) or "preference" in str(c).lower()) and ("飯前" in str(c) or "餐前" in str(c))]
+        pref_a_col = [c for c in df.columns if ("偏好" in str(c) or "preference" in str(c).lower()) and ("飯後" in str(c) or "餐後" in str(c))]
         if pref_b_col and not pd.isna(row[pref_b_col[0]]):
             pref_map[name]["飯前"] = str(row[pref_b_col[0]])
         if pref_a_col and not pd.isna(row[pref_a_col[0]]):
@@ -146,6 +188,7 @@ def run_scheduler(df, start_date, end_date, active_weekdays, holidays_list, b_co
             for s in shifts:
                 x[p, d, s] = model.NewBoolVar(f'x_{p}_{d.strftime("%Y%m%d")}_{s}')
 
+    # 硬性絕不排班約束 (Not Available)
     for d in dates:
         for p in members:
             if avail_map.get(p, {}).get((d, "飯前"), 1) == 0:
@@ -178,7 +221,7 @@ def run_scheduler(df, start_date, end_date, active_weekdays, holidays_list, b_co
                 model.Add(x[p, d, "飯前"] == 0)
                 model.Add(x[p, d, "飯後"] == 0)
 
-    # 1. 硬性次數上限控制
+    # 精準次數微調與公平性計算
     for p, adj in custom_adjustments.items():
         if p in members:
             b_adj = adj.get("飯前", 0)
@@ -192,12 +235,10 @@ def run_scheduler(df, start_date, end_date, active_weekdays, holidays_list, b_co
                 target_a = max(0, math.floor(avg_after + a_adj))
                 model.Add(sum(x[p, d, "飯後"] for d in dates) <= target_a)
 
-    # 2. 公平性與調整分補償 (關鍵修改：將微調成員的期望減少分補加回虛擬分數，防止拉低其他人)
     adjusted_scores = []
     for p in members:
         actual_score = sum(x[p, d, "飯前"] * 2 + x[p, d, "飯後"] * 1 for d in dates)
         
-        # 若該成員有微調，將被扣除的分數補回虛擬分數進行公平性比較
         expected_deduction = 0
         if p in custom_adjustments:
             b_adj = custom_adjustments[p].get("飯前", 0)
@@ -212,9 +253,10 @@ def run_scheduler(df, start_date, end_date, active_weekdays, holidays_list, b_co
     model.AddMinEquality(min_s, adjusted_scores)
 
     pref_score_terms = []
+    weekday_str_map = {0: "週一", 1: "週二", 2: "週三", 3: "週四", 4: "週五"}
     for p in members:
         for d in dates:
-            w_str = weekday_map[d.weekday()]
+            w_str = weekday_str_map[d.weekday()]
             if w_str in pref_map[p]["飯前"]: pref_score_terms.append(x[p, d, "飯前"] * 3)
             if w_str in pref_map[p]["飯後"]: pref_score_terms.append(x[p, d, "飯後"] * 2)
 
@@ -304,8 +346,9 @@ def run_scheduler(df, start_date, end_date, active_weekdays, holidays_list, b_co
             a_cnt = sum(solver.Value(x[p, d, "飯後"]) for d in dates)
             tot = b_cnt * 2 + a_cnt * 1
             pref_hit = 0
+            weekday_str_map = {0: "週一", 1: "週二", 2: "週三", 3: "週四", 4: "週五"}
             for d in dates:
-                w_str = weekday_map[d.weekday()]
+                w_str = weekday_str_map[d.weekday()]
                 if solver.Value(x[p, d, "飯前"]) == 1 and w_str in pref_map[p]["飯前"]: pref_hit += 1
                 if solver.Value(x[p, d, "飯後"]) == 1 and w_str in pref_map[p]["飯後"]: pref_hit += 1
             stats_data.append([p, gender_map.get(p, ""), b_cnt, a_cnt, tot, pref_hit])
@@ -325,7 +368,7 @@ if df_raw is not None:
     if not selected_weekdays:
         st.error("⚠️ 請至少在左側邊欄選擇一個「每週服事日期」！")
     else:
-        st.success(f"✅ 成功讀取表單！共 {len(df_raw)} 位成員數據。")
+        st.success(f"✅ 成功讀取表單！共 {len(members_list)} 位成員數據。")
         
         st.write("### 📌 當前特殊排班設定概覽")
         col1, col2, col3 = st.columns(3)
