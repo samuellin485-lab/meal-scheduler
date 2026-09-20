@@ -212,6 +212,12 @@ def run_scheduler(df, start_date, end_date, active_weekdays, holidays_list, b_co
         model.Add(sum(x[p, d, "飯後"] for p in members) >= a_min)
         model.Add(sum(x[p, d, "飯後"] for p in members) <= a_max)
 
+        # 🟢 新增：飯後任一性別人數不可剛好為 1 人 (允許 0 人，或至少 2 人以上)
+        males_after = [x[p, d, "飯後"] for p in members if "弟兄" in str(gender_map.get(p, ""))]
+        females_after = [x[p, d, "飯後"] for p in members if "姊妹" in str(gender_map.get(p, ""))]
+        model.Add(sum(males_after) != 1)
+        model.Add(sum(females_after) != 1)
+
         for p in members:
             model.Add(x[p, d, "飯前"] + x[p, d, "飯後"] <= 1)
 
